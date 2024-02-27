@@ -6,7 +6,8 @@ using Mutagen.Bethesda.Skyrim.Records.Tooling;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
-using DynamicData;
+using Mutagen.Bethesda.FormKeys.SkyrimSE;
+using System;
 
 namespace NavmeshSpawner {
     public enum SpawnPrevention {
@@ -24,21 +25,20 @@ namespace NavmeshSpawner {
         public SpawnPrevention spawnPrevention = SpawnPrevention.Faction;
     }
     public class Settings {
-        public double minDistance = 1000;
-        public double maxDistance = 10000;
+        public double maxDistance = 8000;
         public double verticalWeight = 0.5;
-        public int maxSpawnsPerNpc = 3;
+        public double[] minDistance = [300, 450, 700, 1000, 1500];
         public EnemySettings enemySettings = new();
     }
 
-    record NpcInfo(bool isValid, HashSet<FormKey> factions);
+    record NpcInfo(bool IsValid, HashSet<FormKey> Factions);
     record PlacedNpcInfo {
-        public IPlacedNpcGetter placedNpc { get; init; }
-        public int allowedSpawns { get; set; }
+        public IPlacedNpcGetter PlacedNpc { get; init; }
+        public int AllowedSpawns { get; set; }
 
         public PlacedNpcInfo(IPlacedNpcGetter placedNpc, int allowedSpawns) {
-            this.placedNpc = placedNpc;
-            this.allowedSpawns = allowedSpawns;
+            PlacedNpc = placedNpc;
+            AllowedSpawns = allowedSpawns;
         }
     };
     public class Program {
@@ -107,65 +107,79 @@ namespace NavmeshSpawner {
         public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state) {
             int counter = 0;
             var worldspaceCellLocation = new WorldspaceCellLocationCache(state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache));
-            var npcsByCell = new Dictionary<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, List<IPlacedNpcGetter>>();
+            var cellList = new List<FormKey>();
+            var cellByFormKey = new Dictionary<FormKey, Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>>();
+            var npcsByCell = new Dictionary<FormKey, List<IPlacedNpcGetter>>();
             var npcInfoDict = new Dictionary<FormKey, NpcInfo>();
             foreach (var placedNpcContext in state.LoadOrder.PriorityOrder.PlacedNpc().WinningContextOverrides(state.LinkCache)) {
 
                 if (placedNpcContext.Record.Placement == null) {
                     continue;
                 }
-
+                
                 if (placedNpcContext.TryGetContainingCell(worldspaceCellLocation, out var containingCell)) {
-                    if (!npcsByCell.TryGetValue(containingCell, out List<IPlacedNpcGetter>? value)) {
-                        value = new List<IPlacedNpcGetter>();
-                        npcsByCell.Add(containingCell, value);
+                    var formKey = containingCell.Record.FormKey;
+                    /*if (formKey != Skyrim.Cell.FortNeugradExterior04.FormKey) {
+                        continue;
+                    }*/
+                    cellByFormKey.TryAdd(formKey, new Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>(containingCell, []));
+                    if (!npcsByCell.TryGetValue(formKey, out List<IPlacedNpcGetter>? value)) {
+                        value = [];
+                        npcsByCell.Add(formKey, value);
+                        cellList.Add(formKey);
                     }
-
+                    cellByFormKey[formKey].Item2.Add(containingCell);
                     value.Add(placedNpcContext.Record);
                 }
             }
 
+            
 
-            foreach (var kv in npcsByCell) {
+            foreach (var cellFormKey in cellList) {
+                var cellContext = cellByFormKey[cellFormKey].Item1;
                 var pointList = new List<P3Float>();
-                var cellContext = kv.Key;
-                var cellRecord = cellContext.Record;
 
-                foreach (var navMesh in cellRecord.NavigationMeshes) {
-                    if (navMesh.Data == null) {
-                        continue;
-                    }
-                    var vertexArray = navMesh.Data.Vertices.ToArray();
-                    foreach (var triangle in navMesh.Data.Triangles) {
-                        var a = vertexArray[triangle.Vertices.X];
-                        var b = vertexArray[triangle.Vertices.Y];
-                        var c = vertexArray[triangle.Vertices.Z];
-                        pointList.Add(new P3Float((a.X + b.X + c.X) / 3, (a.Y + b.Y + c.Y) / 3, (a.Z + b.Z + c.Z) / 3));
+                /*if(cellRecord.FormKey != Skyrim.Cell.EmbershardMine01.FormKey) {
+                    continue;
+                }*/
+
+                foreach (var cell in cellByFormKey[cellFormKey].Item2) {
+                    foreach (var navMesh in cell.Record.NavigationMeshes) {
+                        if (navMesh.Data == null) {
+                            continue;
+                        }
+                        var vertexArray = navMesh.Data.Vertices.ToArray();
+                        foreach (var triangle in navMesh.Data.Triangles) {
+                            var a = vertexArray[triangle.Vertices.X];
+                            var b = vertexArray[triangle.Vertices.Y];
+                            var c = vertexArray[triangle.Vertices.Z];
+                            pointList.Add(new P3Float((a.X + b.X + c.X) / 3, (a.Y + b.Y + c.Y) / 3, (a.Z + b.Z + c.Z) / 3));
+                        }
                     }
                 }
 
                 if (pointList.Count > 0) {
                     ICell? cellCopy = null;
 
-                    var placedNpcs = kv.Value
+                    var placedNpcs = npcsByCell[cellFormKey]
                         .Where(npc => !Settings.enemySettings.ignoreDead || !npc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead))
-                        .Select(npc => new PlacedNpcInfo(npc, Settings.maxSpawnsPerNpc)).ToList();
+                        .Select(npc => new PlacedNpcInfo(npc, Settings.minDistance.Length)).ToList();
 
 
                     foreach (var placedNpc in placedNpcs) {
-                        var key = placedNpc.placedNpc.Base.FormKey;
+                        var key = placedNpc.PlacedNpc.Base.FormKey;
                         if (!npcInfoDict.ContainsKey(key)) {
-                            if (placedNpc.placedNpc.Base.TryResolve(state.LinkCache, out var npc)) {
+                            if (placedNpc.PlacedNpc.Base.TryResolve(state.LinkCache, out var npc)) {
                                 npcInfoDict.Add(key, new NpcInfo(NpcIsValidSpawn(npc, state.LinkCache), GetFactions(npc, state.LinkCache)));
                             } else {
-                                npcInfoDict.Add(key, new NpcInfo(false, new HashSet<FormKey>()));
+                                npcInfoDict.Add(key, new NpcInfo(false, []));
                             }
                         }
                     }
 
 
-
-                    foreach (var point in pointList) {
+                    Random rng = new();
+                    foreach (var point in pointList.OrderBy(_ => rng.Next())) {
 
                         var nearbyNpcs = new List<PlacedNpcInfo>();
                         var preventionNpcs = new List<PlacedNpcInfo>();
@@ -174,15 +188,14 @@ namespace NavmeshSpawner {
                         PriorityQueue<PlacedNpcInfo, double> closestNpcs = new();
 
                         foreach (var placedNpc in placedNpcs) {
-                            var pos1 = placedNpc.placedNpc.Placement!.Position * 1;
+                            var pos1 = placedNpc.PlacedNpc.Placement!.Position * 1;
                             var pos2 = point * 1;
                             pos1.Z *= (float)Settings.verticalWeight;
                             pos2.Z *= (float)Settings.verticalWeight;
                             var distance = (pos1 - pos2).Magnitude;
-                            if (distance < Settings.minDistance) {
-                                valid = false;
-                                break;
-                            }
+
+                           
+
                             if (distance <= Settings.maxDistance) {
                                 closestNpcs.Enqueue(placedNpc, distance);
                             }
@@ -191,61 +204,73 @@ namespace NavmeshSpawner {
                         if (closestNpcs.Count < Settings.enemySettings.minNearby) {
                             continue;
                         }
-                        var closestNpc = closestNpcs.Peek();
-                        var closestBaseNpc = closestNpc.placedNpc.Base;
-                        var closestNpcInfo = npcInfoDict[closestBaseNpc.FormKey];
-                        if (!closestNpcInfo.isValid || closestNpc.placedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead) || closestNpc.placedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.Persistent)) {
-                            continue;
-                        }
 
-                        var missing = Settings.enemySettings.minNearby;
-                        while (missing > 1) {
-                            nearbyNpcs.Add(closestNpcs.Dequeue());
-                            missing--;
-                        }
-                        if (closestNpcs.TryDequeue(out var farthestConsidered, out var farthestDistance)) {
+                        if (closestNpcs.TryDequeue(out var closestNpc, out var closestDistance)) {
+                            if(closestNpc.AllowedSpawns <= 0) {
+                                continue;
+                            }
 
-                            if (Settings.enemySettings.spawnPrevention != SpawnPrevention.Never) {
-                                foreach (var placedNpc in placedNpcs) {
-                                    var pos1 = placedNpc.placedNpc.Placement!.Position * 1;
-                                    var pos2 = point * 1;
-                                    pos1.Z *= (float)Settings.verticalWeight;
-                                    pos2.Z *= (float)Settings.verticalWeight;
-                                    var distance = (pos1 - pos2).Magnitude;
-                                    if (distance <= farthestDistance * Settings.enemySettings.preventionFactor) {
-                                        var preventationNpcInfo = npcInfoDict[placedNpc.placedNpc.Base.FormKey];
-                                        if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Faction) {
-                                            if (!closestNpcInfo.factions.Intersect(preventationNpcInfo.factions).Any()) {
-                                                valid = false;
-                                                break;
+                            var index = Math.Min(Settings.minDistance.Length - closestNpc.AllowedSpawns, Settings.minDistance.Length - 1);
+                            if (closestDistance < Settings.minDistance[index]) {
+                                continue;
+                            }
+
+                            var closestBaseNpc = closestNpc.PlacedNpc.Base;
+                            var closestNpcInfo = npcInfoDict[closestBaseNpc.FormKey];
+                            if (!closestNpcInfo.IsValid || closestNpc.PlacedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead)) {
+                                continue;
+                            }
+
+                            var missing = Settings.enemySettings.minNearby - 1;
+                            while (missing > 1) {
+                                nearbyNpcs.Add(closestNpcs.Dequeue());
+                                missing--;
+                            }
+                            if (closestNpcs.TryDequeue(out var farthestConsidered, out var farthestDistance)) {
+
+                                if (Settings.enemySettings.spawnPrevention != SpawnPrevention.Never) {
+                                    foreach (var placedNpc in placedNpcs) {
+                                        var pos1 = placedNpc.PlacedNpc.Placement!.Position * 1;
+                                        var pos2 = point * 1;
+                                        pos1.Z *= (float)Settings.verticalWeight;
+                                        pos2.Z *= (float)Settings.verticalWeight;
+                                        var distance = (pos1 - pos2).Magnitude;
+                                        if (distance <= farthestDistance * Settings.enemySettings.preventionFactor) {
+                                            var preventationNpcInfo = npcInfoDict[placedNpc.PlacedNpc.Base.FormKey];
+                                            if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Faction) {
+                                                if (!closestNpcInfo.Factions.Intersect(preventationNpcInfo.Factions).Any()) {
+                                                    valid = false;
+                                                    break;
+                                                }
+                                            } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Id) {
+                                                if (closestBaseNpc.FormKey != placedNpc.PlacedNpc.Base.FormKey) {
+                                                    valid = false;
+                                                    break;
+                                                }
+                                            } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Root) {
+                                                // not implemented
                                             }
-                                        } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Id) {
-                                            if (closestBaseNpc.FormKey != placedNpc.placedNpc.Base.FormKey) {
-                                                valid = false;
-                                                break;
-                                            }
-                                        } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Root) {
-                                            // not implemented
                                         }
                                     }
-                                }
 
-                                if (valid) {
-                                    var newNpc = new PlacedNpc(state.PatchMod);
-                                    newNpc.DeepCopyIn(closestNpc.placedNpc);
-                                    newNpc.LevelModifier = closestNpc.placedNpc.LevelModifier;
-                                    newNpc.LinkedReferences.Clear();
-                                    newNpc.Placement = new Placement() {
-                                        Position = point
-                                    };
-                                    closestNpc.allowedSpawns--;
-                                    if (cellCopy == null) {
-                                        cellCopy = cellContext.GetOrAddAsOverride(state.PatchMod);
+                                    if (valid) {
+                                        var newNpc = new PlacedNpc(state.PatchMod);
+                                        newNpc.DeepCopyIn(closestNpc.PlacedNpc);
+                                        newNpc.LevelModifier = closestNpc.PlacedNpc.LevelModifier;
+                                        newNpc.MajorFlags = newNpc.MajorFlags.SetFlag(PlacedNpc.MajorFlag.Persistent, false);
+                                        newNpc.LinkedReferences.Clear();
+                                        newNpc.Placement = new Placement() {
+                                            Position = point
+                                        };
+                                        closestNpc.AllowedSpawns--;
+                                        cellCopy ??= cellContext.GetOrAddAsOverride(state.PatchMod);
+                                        cellCopy.Temporary.Add(newNpc);
+                                        placedNpcs.Add(new PlacedNpcInfo(newNpc, 0));
+                                        counter++;
                                     }
-                                    cellCopy.Temporary.Add(newNpc);
-                                    placedNpcs.Add(new PlacedNpcInfo(newNpc, 0));
-                                    counter++;
                                 }
+                            } else {
+                                Console.WriteLine("Queue error");
                             }
                         }
                     }
