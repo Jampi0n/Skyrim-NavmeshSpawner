@@ -27,7 +27,7 @@ namespace NavmeshSpawner {
         public double clusterDistance = 1200;
         public double clusterRadius = 600;
 
-        public SpawnPrevention spawnPrevention = SpawnPrevention.Faction;
+        public SpawnPrevention spawnPrevention = SpawnPrevention.Never;
     }
     public class Settings {
         public double maxDistance = 6000;
@@ -59,6 +59,48 @@ namespace NavmeshSpawner {
                     out _Settings)
                 .SetTypicalOpen(GameRelease.SkyrimSE, "NavmeshSpawner.esp")
                 .Run(args);
+        }
+
+
+        private static Dictionary<FormKey, FormKey> leveledNpcTree = null!;
+
+        private static void buildLeveledNpcTree(IPatcherState<ISkyrimMod, ISkyrimModGetter> state) {
+            var result = new Dictionary<FormKey, FormKey>();
+            var relationTree = new Dictionary<FormKey, HashSet<FormKey>>();
+            foreach (var leveledNpc in state.LoadOrder.PriorityOrder.LeveledNpc().WinningOverrides()) {
+
+                if (leveledNpc.Entries == null) {
+                    continue;
+                }
+                foreach (var entry in leveledNpc.Entries) {
+                    if (entry.Data == null) {
+                        continue;
+                    }
+
+                    if (!relationTree.TryGetValue(entry.Data.Reference.FormKey, out HashSet<FormKey>? set)) {
+                        set = [];
+                        relationTree.Add(entry.Data.Reference.FormKey, set);
+                    }
+                    set.Add(leveledNpc.FormKey);
+                }
+            }
+
+            foreach(var kv in relationTree) {
+                var current = kv.Key;
+                while(true) {
+                    if (relationTree.ContainsKey(current)) {
+                        if (relationTree[current].Count == 1) {
+                            current = relationTree[current].First();
+                        } else {
+                            break;
+                        }
+                    } else {
+                        result[kv.Key] = current;
+                        break;
+                    }
+                }   
+            }
+            leveledNpcTree = result;
         }
 
         private static bool NpcIsValidSpawnRec(INpcSpawnGetter npcSpawnGetter, ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache, bool containsLeveledChar) {
@@ -134,6 +176,7 @@ namespace NavmeshSpawner {
             }
             clusterExpectedSize /= clusterExpectedSize;
 
+            buildLeveledNpcTree(state);
 
 
             foreach (var cellContext in state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache)) {
@@ -235,43 +278,50 @@ namespace NavmeshSpawner {
                             if (!closestNpcInfo.IsValid || closestNpc.PlacedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead)) {
                                 continue;
                             }
+                            closestNpcs.Enqueue(closestNpc, closestDistance);
 
-                            var missing = Settings.enemySettings.minNearby - 1;
+
+                            var missing = Settings.enemySettings.minNearby;
                             while (missing > 1) {
                                 nearbyNpcs.Add(closestNpcs.Dequeue());
                                 missing--;
                             }
                             if (closestNpcs.TryDequeue(out var farthestConsidered, out var farthestDistance)) {
-
-                                if (Settings.enemySettings.spawnPrevention != SpawnPrevention.Never) {
-                                    foreach (var placedNpc in placedNpcs) {
-                                        var pos1 = placedNpc.PlacedNpc.Placement!.Position * 1;
-                                        var pos2 = point * 1;
-                                        pos1.Z *= (float)Settings.verticalWeight;
-                                        pos2.Z *= (float)Settings.verticalWeight;
-                                        var distance = (pos1 - pos2).Magnitude;
-                                        if (distance <= farthestDistance * Settings.enemySettings.preventionFactor) {
-                                            var preventationNpcInfo = npcInfoDict[placedNpc.PlacedNpc.Base.FormKey];
-                                            if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Faction) {
-                                                if (!closestNpcInfo.Factions.Intersect(preventationNpcInfo.Factions).Any()) {
-                                                    valid = false;
-                                                    break;
-                                                }
-                                            } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Id) {
-                                                if (closestBaseNpc.FormKey != placedNpc.PlacedNpc.Base.FormKey) {
-                                                    valid = false;
-                                                    break;
-                                                }
-                                            } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Root) {
-                                                // not implemented
+                                foreach (var placedNpc in placedNpcs) {
+                                    var pos1 = placedNpc.PlacedNpc.Placement!.Position * 1;
+                                    var pos2 = point * 1;
+                                    pos1.Z *= (float)Settings.verticalWeight;
+                                    pos2.Z *= (float)Settings.verticalWeight;
+                                    var distance = (pos1 - pos2).Magnitude;
+                                    if (distance <= farthestDistance * Settings.enemySettings.preventionFactor) {
+                                        var preventationNpcInfo = npcInfoDict[placedNpc.PlacedNpc.Base.FormKey];
+                                        if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Faction) {
+                                            if (!closestNpcInfo.Factions.Intersect(preventationNpcInfo.Factions).Any()) {
+                                                valid = false;
+                                                break;
+                                            }
+                                        } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Id) {
+                                            if (closestBaseNpc.FormKey != placedNpc.PlacedNpc.Base.FormKey) {
+                                                valid = false;
+                                                break;
+                                            }
+                                        } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Root) {
+                                            if(!leveledNpcTree.ContainsKey(closestBaseNpc.FormKey) || !leveledNpcTree.ContainsKey(placedNpc.PlacedNpc.Base.FormKey)) {
+                                                valid = false;
+                                                break;
+                                            }
+                                            if (leveledNpcTree[closestBaseNpc.FormKey] != leveledNpcTree[placedNpc.PlacedNpc.Base.FormKey]) {
+                                                valid = false;
+                                                break;
                                             }
                                         }
                                     }
-
-                                    if (valid) {
-                                        spawnTypeByPoint[point] =  closestNpc;
-                                    }
                                 }
+
+                                if (valid) {
+                                    spawnTypeByPoint[point] = closestNpc;
+                                }
+
                             } else {
                                 Console.WriteLine("Queue error");
                             }
@@ -292,17 +342,17 @@ namespace NavmeshSpawner {
                         var clusterSize = clusterLength - 1;
                         var clusterSizeRng = rng.NextDouble() * totalClusterChance;
 
-                        if(processedPoints >= 1 && Settings.pseudoRandom) {
+                        if (processedPoints >= 1 && Settings.pseudoRandom) {
                             var expected = clusterExpectedSize * processedPoints;
                             var maxCorrection = Math.Sqrt(processedPoints);
-                            var accuracy = Math.Max(1.0/ maxCorrection, Math.Min((1.0 * numSpawns) / expected, maxCorrection));
+                            var accuracy = Math.Max(1.0 / maxCorrection, Math.Min((1.0 * numSpawns) / expected, maxCorrection));
                             var tmp = Math.Pow(accuracy, processedPoints);
                             var pseudoRandom = totalClusterChance * tmp;
                             var pseudoOffset = (1 - tmp) * totalClusterChance;
 
                             clusterSizeRng = rng.NextDouble() * pseudoRandom + pseudoOffset;
                             //Console.WriteLine("accuracy=" + accuracy);
-                        }                        
+                        }
 
                         for (var i = 0; i < clusterLength; i++) {
                             if (clusterSizeRng <= clusterChance[i]) {
@@ -318,11 +368,11 @@ namespace NavmeshSpawner {
                         for (var current = remainingSpawnPoints.First; current != null;) {
                             var next = current.Next;
                             var distance = Distance(first.Item1, current.Value.Item1);
-                            if (distance < Settings.enemySettings.clusterDistance) {                                
+                            if (distance < Settings.enemySettings.clusterDistance) {
                                 if (distance < Settings.enemySettings.clusterRadius) {
                                     validSpawnPoints.Add(current.Value);
                                 }
-                                remainingSpawnPoints.Remove(current);                                
+                                remainingSpawnPoints.Remove(current);
                             }
                             current = next;
                         }
@@ -337,9 +387,14 @@ namespace NavmeshSpawner {
                             newNpc.LevelModifier = closestNpc.PlacedNpc.LevelModifier;
                             newNpc.MajorFlags = newNpc.MajorFlags.SetFlag(PlacedNpc.MajorFlag.Persistent, false);
                             newNpc.LinkedReferences.Clear();
+                            newNpc.LocationRefTypes = null;
+                            newNpc.PersistentLocation.Clear();
                             newNpc.Placement = new Placement() {
                                 Position = spawnPoint.Item1
                             };
+                            if(Settings.enemySettings.spawnRoot && leveledNpcTree.ContainsKey(closestNpc.PlacedNpc.Base.FormKey)) {
+                                newNpc.Base.SetTo(leveledNpcTree[closestNpc.PlacedNpc.Base.FormKey]);
+                            }
                             cellCopy ??= cellContext.GetOrAddAsOverride(state.PatchMod);
                             cellCopy.Temporary.Add(newNpc);
                             numSpawns++;
