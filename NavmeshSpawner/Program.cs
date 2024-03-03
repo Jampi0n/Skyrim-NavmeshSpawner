@@ -23,17 +23,17 @@ namespace NavmeshSpawner {
         public double preventionFactor = 1.25;
         public bool ignoreDead = true;
         public bool spawnRoot = true;
-        public double[] clusterChance = [100, 15, 25, 21, 8, 2];
-        public double clusterDistance = 1200;
-        public double clusterRadius = 600;
+        public double[] clusterChance = [400, 15, 25, 21, 8, 2];
+        public double clusterDistance = 200;
+        public double clusterRadius = 100;
 
         public SpawnPrevention spawnPrevention = SpawnPrevention.Never;
     }
     public class Settings {
         public double maxDistance = 6000;
         public double verticalWeight = 0.5;
-        public double minDistance = 1200;
-        public bool pseudoRandom = true;
+        public double minDistance = 200;
+        public bool pseudoRandom = false;
         public EnemySettings enemySettings = new();
     }
 
@@ -85,9 +85,9 @@ namespace NavmeshSpawner {
                 }
             }
 
-            foreach(var kv in relationTree) {
+            foreach (var kv in relationTree) {
                 var current = kv.Key;
-                while(true) {
+                while (true) {
                     if (relationTree.ContainsKey(current)) {
                         if (relationTree[current].Count == 1) {
                             current = relationTree[current].First();
@@ -98,7 +98,7 @@ namespace NavmeshSpawner {
                         result[kv.Key] = current;
                         break;
                     }
-                }   
+                }
             }
             leveledNpcTree = result;
         }
@@ -162,6 +162,7 @@ namespace NavmeshSpawner {
             var worldspaceCellLocation = new WorldspaceCellLocationCache(state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache));
             var cellList = new List<FormKey>();
             var cellByFormKey = new Dictionary<FormKey, Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>>();
+            var playerMarkersByCell = new Dictionary<FormKey, HashSet<IPlacedObjectGetter>>();
             var npcsByCell = new Dictionary<FormKey, List<IPlacedNpcGetter>>();
             var npcInfoDict = new Dictionary<FormKey, NpcInfo>();
 
@@ -178,6 +179,18 @@ namespace NavmeshSpawner {
 
             buildLeveledNpcTree(state);
 
+
+            foreach (var placedObjectContext in state.LoadOrder.PriorityOrder.PlacedObject().WinningContextOverrides(state.LinkCache)) {
+                if (placedObjectContext.Record.Base.FormKey == Skyrim.Static.COCMarkerHeading.FormKey) {
+                    if (placedObjectContext.TryGetContainingCell(worldspaceCellLocation, out var containingCell)) {
+                        var formKey = containingCell.Record.FormKey;
+                        if (!playerMarkersByCell.ContainsKey(formKey)) {
+                            playerMarkersByCell.Add(formKey, []);
+                        }
+                        playerMarkersByCell[formKey].Add(placedObjectContext.Record);
+                    }
+                }
+            }
 
             foreach (var cellContext in state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache)) {
                 cellByFormKey.Add(cellContext.Record.FormKey, new Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>(cellContext, []));
@@ -210,9 +223,9 @@ namespace NavmeshSpawner {
                 var cellContext = cellByFormKey[cellFormKey].Item1;
                 var pointList = new List<P3Float>();
 
-                /*if(cellContext.Record.FormKey != Skyrim.Cell.EmbershardMine01.FormKey) {
+                if(cellContext.Record.FormKey != Skyrim.Cell.BleakFallsBarrow01.FormKey) {
                     continue;
-                }*/
+                }
 
                 foreach (var cell in cellByFormKey[cellFormKey].Item2) {
                     foreach (var navMesh in cell.Record.NavigationMeshes) {
@@ -237,6 +250,8 @@ namespace NavmeshSpawner {
                         .Select(npc => new PlacedNpcInfo(npc)).ToList();
 
 
+                    var placedMarkers = playerMarkersByCell.GetValueOrDefault(cellFormKey, []);
+
                     foreach (var placedNpc in placedNpcs) {
                         var key = placedNpc.PlacedNpc.Base.FormKey;
                         if (!npcInfoDict.ContainsKey(key)) {
@@ -256,6 +271,19 @@ namespace NavmeshSpawner {
                         var valid = true;
                         PriorityQueue<PlacedNpcInfo, double> closestNpcs = new();
 
+                        foreach (var marker in placedMarkers) {
+                            if (marker.Placement != null) {
+                                var distance = Distance(marker.Placement.Position, point);
+                                if (distance < 3000) {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!valid) {
+                            continue;
+                        }
+
                         foreach (var placedNpc in placedNpcs) {
                             var distance = Distance(placedNpc.PlacedNpc.Placement!.Position, point);
 
@@ -272,6 +300,8 @@ namespace NavmeshSpawner {
                             if (closestDistance < Settings.minDistance) {
                                 continue;
                             }
+
+
 
                             var closestBaseNpc = closestNpc.PlacedNpc.Base;
                             var closestNpcInfo = npcInfoDict[closestBaseNpc.FormKey];
@@ -306,7 +336,7 @@ namespace NavmeshSpawner {
                                                 break;
                                             }
                                         } else if (Settings.enemySettings.spawnPrevention == SpawnPrevention.Root) {
-                                            if(!leveledNpcTree.ContainsKey(closestBaseNpc.FormKey) || !leveledNpcTree.ContainsKey(placedNpc.PlacedNpc.Base.FormKey)) {
+                                            if (!leveledNpcTree.ContainsKey(closestBaseNpc.FormKey) || !leveledNpcTree.ContainsKey(placedNpc.PlacedNpc.Base.FormKey)) {
                                                 valid = false;
                                                 break;
                                             }
@@ -389,10 +419,28 @@ namespace NavmeshSpawner {
                             newNpc.LinkedReferences.Clear();
                             newNpc.LocationRefTypes = null;
                             newNpc.PersistentLocation.Clear();
+                            var direction = (float)rng.NextDouble() * 360;
+                            if (placedMarkers.Count > 0) {
+                                var minDistance = double.MaxValue;
+                                var closestMarker = new P3Float();
+                                foreach (var marker in placedMarkers) {
+                                    if (marker.Placement != null) {
+                                        var distance = Distance(marker.Placement.Position, spawnPoint.Item1);
+                                        if (distance < minDistance) {
+                                            minDistance = distance;
+                                            closestMarker = marker.Placement.Position;
+                                        }
+                                    }
+                                }
+                                if (minDistance < double.MaxValue) {
+                                    direction = (float)Math.Atan2(closestMarker.Y - spawnPoint.Item1.Y, closestMarker.X - spawnPoint.Item1.X);
+                                }
+                            }
                             newNpc.Placement = new Placement() {
-                                Position = spawnPoint.Item1
+                                Position = spawnPoint.Item1,
+                                Rotation = new P3Float(0, 0, direction)
                             };
-                            if(Settings.enemySettings.spawnRoot && leveledNpcTree.ContainsKey(closestNpc.PlacedNpc.Base.FormKey)) {
+                            if (Settings.enemySettings.spawnRoot && leveledNpcTree.ContainsKey(closestNpc.PlacedNpc.Base.FormKey)) {
                                 newNpc.Base.SetTo(leveledNpcTree[closestNpc.PlacedNpc.Base.FormKey]);
                             }
                             cellCopy ??= cellContext.GetOrAddAsOverride(state.PatchMod);
