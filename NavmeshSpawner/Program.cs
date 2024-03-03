@@ -104,6 +104,7 @@ namespace NavmeshSpawner {
             return [];
         }
 
+
         public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state) {
             int counter = 0;
             var worldspaceCellLocation = new WorldspaceCellLocationCache(state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache));
@@ -111,18 +112,22 @@ namespace NavmeshSpawner {
             var cellByFormKey = new Dictionary<FormKey, Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>>();
             var npcsByCell = new Dictionary<FormKey, List<IPlacedNpcGetter>>();
             var npcInfoDict = new Dictionary<FormKey, NpcInfo>();
+
+            foreach (var cellContext in state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache)) {
+                cellByFormKey.Add(cellContext.Record.FormKey, new Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>(cellContext, []));
+            }
+
             foreach (var placedNpcContext in state.LoadOrder.PriorityOrder.PlacedNpc().WinningContextOverrides(state.LinkCache)) {
 
                 if (placedNpcContext.Record.Placement == null) {
                     continue;
                 }
-                
+
                 if (placedNpcContext.TryGetContainingCell(worldspaceCellLocation, out var containingCell)) {
                     var formKey = containingCell.Record.FormKey;
                     /*if (formKey != Skyrim.Cell.FortNeugradExterior04.FormKey) {
                         continue;
                     }*/
-                    cellByFormKey.TryAdd(formKey, new Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>(containingCell, []));
                     if (!npcsByCell.TryGetValue(formKey, out List<IPlacedNpcGetter>? value)) {
                         value = [];
                         npcsByCell.Add(formKey, value);
@@ -133,7 +138,7 @@ namespace NavmeshSpawner {
                 }
             }
 
-            
+
 
             foreach (var cellFormKey in cellList) {
                 var cellContext = cellByFormKey[cellFormKey].Item1;
@@ -194,7 +199,7 @@ namespace NavmeshSpawner {
                             pos2.Z *= (float)Settings.verticalWeight;
                             var distance = (pos1 - pos2).Magnitude;
 
-                           
+
 
                             if (distance <= Settings.maxDistance) {
                                 closestNpcs.Enqueue(placedNpc, distance);
@@ -206,7 +211,7 @@ namespace NavmeshSpawner {
                         }
 
                         if (closestNpcs.TryDequeue(out var closestNpc, out var closestDistance)) {
-                            if(closestNpc.AllowedSpawns <= 0) {
+                            if (closestNpc.AllowedSpawns <= 0) {
                                 continue;
                             }
 
