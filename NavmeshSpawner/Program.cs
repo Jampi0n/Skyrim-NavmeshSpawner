@@ -7,9 +7,6 @@ using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.FormKeys.SkyrimSE;
-using System;
-using System.Runtime.ExceptionServices;
-using DynamicData;
 
 namespace NavmeshSpawner {
 
@@ -26,15 +23,17 @@ namespace NavmeshSpawner {
         public double preventionFactor = 1.25;
         public bool ignoreDead = true;
         public bool spawnRoot = true;
-        public double[] clusterChance = [200, 20, 30, 22, 15, 9, 3];
-        public double clusterDistance = 900;
+        public double[] clusterChance = [100, 15, 25, 21, 8, 2];
+        public double clusterDistance = 1200;
+        public double clusterRadius = 600;
 
         public SpawnPrevention spawnPrevention = SpawnPrevention.Faction;
     }
     public class Settings {
-        public double maxDistance = 8000;
+        public double maxDistance = 6000;
         public double verticalWeight = 0.5;
-        public double minDistance = 600;
+        public double minDistance = 1200;
+        public bool pseudoRandom = true;
         public EnemySettings enemySettings = new();
     }
 
@@ -124,6 +123,19 @@ namespace NavmeshSpawner {
             var npcsByCell = new Dictionary<FormKey, List<IPlacedNpcGetter>>();
             var npcInfoDict = new Dictionary<FormKey, NpcInfo>();
 
+            var clusterLength = Settings.enemySettings.clusterChance.Length;
+            var totalClusterChance = .0;
+            var clusterChance = new double[clusterLength];
+            var clusterExpectedSize = .0;
+            for (var i = 0; i < clusterLength; i++) {
+                clusterExpectedSize += i * Settings.enemySettings.clusterChance[i];
+                totalClusterChance += Settings.enemySettings.clusterChance[i];
+                clusterChance[i] = totalClusterChance;
+            }
+            clusterExpectedSize /= clusterExpectedSize;
+
+
+
             foreach (var cellContext in state.LoadOrder.PriorityOrder.Cell().WinningContextOverrides(state.LinkCache)) {
                 cellByFormKey.Add(cellContext.Record.FormKey, new Tuple<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>, HashSet<IModContext<ISkyrimMod, ISkyrimModGetter, ICell, ICellGetter>>>(cellContext, []));
             }
@@ -155,9 +167,9 @@ namespace NavmeshSpawner {
                 var cellContext = cellByFormKey[cellFormKey].Item1;
                 var pointList = new List<P3Float>();
 
-                if(cellContext.Record.FormKey != Skyrim.Cell.EmbershardMine01.FormKey) {
+                /*if(cellContext.Record.FormKey != Skyrim.Cell.EmbershardMine01.FormKey) {
                     continue;
-                }
+                }*/
 
                 foreach (var cell in cellByFormKey[cellFormKey].Item2) {
                     foreach (var navMesh in cell.Record.NavigationMeshes) {
@@ -257,7 +269,7 @@ namespace NavmeshSpawner {
                                     }
 
                                     if (valid) {
-                                        spawnTypeByPoint.Add(point, closestNpc);
+                                        spawnTypeByPoint[point] =  closestNpc;
                                     }
                                 }
                             } else {
@@ -266,31 +278,39 @@ namespace NavmeshSpawner {
                         }
                     }
 
-                    var clusterLength = Settings.enemySettings.clusterChance.Length;
-                    var totalClusterChance = .0;
-                    var clusterChance = new double[clusterLength];
-                    for (var i = 0; i < clusterLength; i++) {
-                        totalClusterChance += Settings.enemySettings.clusterChance[i];
-                        clusterChance[i] = totalClusterChance;
-                    }
-
                     Random rng = new();
                     var remainingSpawnPoints = new LinkedList<Tuple<P3Float, PlacedNpcInfo>>();
                     foreach (var p in spawnTypeByPoint.Keys.OrderBy(_ => rng.Next())) {
                         remainingSpawnPoints.AddFirst(new Tuple<P3Float, PlacedNpcInfo>(p, spawnTypeByPoint[p]));
                     }
 
+                    var numSpawns = 0;
+                    var processedPoints = 0;
                     while (remainingSpawnPoints.Count > 0) {
+                        processedPoints++;
 
-                        var clusterSize = 0;
+                        var clusterSize = clusterLength - 1;
                         var clusterSizeRng = rng.NextDouble() * totalClusterChance;
+
+                        if(processedPoints >= 1 && Settings.pseudoRandom) {
+                            var expected = clusterExpectedSize * processedPoints;
+                            var maxCorrection = Math.Sqrt(processedPoints);
+                            var accuracy = Math.Max(1.0/ maxCorrection, Math.Min((1.0 * numSpawns) / expected, maxCorrection));
+                            var tmp = Math.Pow(accuracy, processedPoints);
+                            var pseudoRandom = totalClusterChance * tmp;
+                            var pseudoOffset = (1 - tmp) * totalClusterChance;
+
+                            clusterSizeRng = rng.NextDouble() * pseudoRandom + pseudoOffset;
+                            //Console.WriteLine("accuracy=" + accuracy);
+                        }                        
+
                         for (var i = 0; i < clusterLength; i++) {
                             if (clusterSizeRng <= clusterChance[i]) {
                                 clusterSize = i;
                                 break;
                             }
                         }
-                        Console.WriteLine("Try ClusterSize=" + clusterSize);
+                        //Console.WriteLine("Try ClusterSize=" + clusterSize);
 
                         var first = remainingSpawnPoints.First!.Value;
                         var validSpawnPoints = new List<Tuple<P3Float, PlacedNpcInfo>>();
@@ -299,7 +319,7 @@ namespace NavmeshSpawner {
                             var next = current.Next;
                             var distance = Distance(first.Item1, current.Value.Item1);
                             if (distance < Settings.enemySettings.clusterDistance) {                                
-                                if (distance < Settings.enemySettings.clusterDistance) {
+                                if (distance < Settings.enemySettings.clusterRadius) {
                                     validSpawnPoints.Add(current.Value);
                                 }
                                 remainingSpawnPoints.Remove(current);                                
@@ -309,7 +329,7 @@ namespace NavmeshSpawner {
 
 
                         var realClusterSize = Math.Min(validSpawnPoints.Count, clusterSize);
-                        Console.WriteLine("Spawn ClusterSize=" + realClusterSize);
+                        //Console.WriteLine("Spawn ClusterSize=" + realClusterSize);
                         foreach (var spawnPoint in validSpawnPoints.Take(realClusterSize)) {
                             var closestNpc = spawnPoint.Item2;
                             var newNpc = new PlacedNpc(state.PatchMod);
@@ -322,10 +342,10 @@ namespace NavmeshSpawner {
                             };
                             cellCopy ??= cellContext.GetOrAddAsOverride(state.PatchMod);
                             cellCopy.Temporary.Add(newNpc);
-                            counter++;
+                            numSpawns++;
                         }
-
                     }
+                    counter += numSpawns;
                 }
             }
             Console.WriteLine(counter);
