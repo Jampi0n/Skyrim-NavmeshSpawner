@@ -10,69 +10,6 @@ using Mutagen.Bethesda.FormKeys.SkyrimSE;
 
 namespace NavmeshSpawner {
 
-
-    public enum SpawnPrevention {
-        Id,
-        Root,
-        Faction,
-        Never
-    }
-
-
-    public class DomainSettings {
-        public bool enabled;
-        public double distanceToExistingNpcMin;
-        public double distanceToExistingNpcMax;
-        public double distanceToPlayerSpawn;
-        public bool ignoreExistingDeadNpc;
-        public double verticalDistanceWeight;
-        public int minimumNumExistingNpcsNearby;
-        public SpawnPrevention preventionMethod = SpawnPrevention.Never;
-        public double preventionDistanceFactor;
-
-        public double[] clusterSpawnChance = [];
-        public double clusterMinimumDistanceToOtherClusters;
-        public double clusterSpawnRadius;
-        public bool clusterUsePseudoRandom;
-        public bool clusterSpawnRoot;
-    }
-
-
-    public class Settings {
-        public DomainSettings Interior = new() {
-            enabled = true,
-            distanceToExistingNpcMin = 500,
-            distanceToExistingNpcMax = 10000,
-            distanceToPlayerSpawn = 2500,
-            ignoreExistingDeadNpc = true,
-            verticalDistanceWeight = 4,
-            minimumNumExistingNpcsNearby = 2,
-            preventionMethod = SpawnPrevention.Faction,
-            preventionDistanceFactor = 1.5,
-            clusterSpawnChance = [200, 15, 25, 21, 8, 2],
-            clusterMinimumDistanceToOtherClusters = 700,
-            clusterSpawnRadius = 300,
-            clusterUsePseudoRandom = false,
-            clusterSpawnRoot = true
-        };
-        public DomainSettings Exterior = new() {
-            enabled = true,
-            distanceToExistingNpcMin = 500,
-            distanceToExistingNpcMax = 5000,
-            distanceToPlayerSpawn = -1,
-            ignoreExistingDeadNpc = true,
-            verticalDistanceWeight = 1.5,
-            minimumNumExistingNpcsNearby = 2,
-            preventionMethod = SpawnPrevention.Faction,
-            preventionDistanceFactor = 1.5,
-            clusterSpawnChance = [400, 15, 25, 21, 8, 2],
-            clusterMinimumDistanceToOtherClusters = 1200,
-            clusterSpawnRadius = 400,
-            clusterUsePseudoRandom = false,
-            clusterSpawnRoot = true
-        };
-    }
-
     record NpcInfo(bool IsValid, HashSet<FormKey> Factions);
     record PlacedNpcInfo {
         public IPlacedNpcGetter PlacedNpc { get; init; }
@@ -81,10 +18,13 @@ namespace NavmeshSpawner {
             PlacedNpc = placedNpc;
         }
     };
+
+
     public class Program {
 
         static Lazy<Settings> _Settings = null!;
         public static Settings Settings => _Settings.Value;
+
 
         public static async Task<int> Main(string[] args) {
             return await SynthesisPipeline.Instance
@@ -182,6 +122,47 @@ namespace NavmeshSpawner {
                     if (template is not ILeveledNpcGetter) {
                         continue;
                     }
+                    var templateFlags = npcRecord.Configuration.TemplateFlags;
+                    if(!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.AIData)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.AIPackages)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.AttackData)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.BaseData)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.DefPackList)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Factions)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Inventory)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Keywords)) {
+                        //continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.ModelAnimation)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Script)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.SpellList)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Stats)) {
+                        continue;
+                    }
+                    if (!templateFlags.HasFlag(NpcConfiguration.TemplateFlag.Traits)) {
+                        continue;
+                    }
+
                     if (nonNull.ContainsKey(template.FormKey)) {
                         var leveledNpc = nonNull[template.FormKey];
                         if (leveledNpcToNpc.ContainsKey(leveledNpc)) {
@@ -190,38 +171,6 @@ namespace NavmeshSpawner {
                     }
                 }
             }
-
-            /*var leveledNpcToNpc = new Dictionary<FormKey, INpcGetter>();
-            foreach (var npcRecord in state.LoadOrder.PriorityOrder.Npc().WinningOverrides()) {
-                if (!npcRecord.Template.IsNull) {
-                    var template = npcRecord.Template.Resolve(state.LinkCache);
-                    if (template is not ILeveledNpcGetter) {
-                        continue;
-                    }
-                    if (leveledNpcToNpc.ContainsKey(template.FormKey)) {
-                        var prev = leveledNpcToNpc[template.FormKey];
-                        var prevTemplateFlags = (uint)prev.Configuration.TemplateFlags;
-                        var newTemplateFlags = (uint)npcRecord.Configuration.TemplateFlags;
-                        if ((newTemplateFlags & prevTemplateFlags) == prevTemplateFlags) {
-                            leveledNpcToNpc[template.FormKey] =  npcRecord;
-                        }
-                    } else {
-                        leveledNpcToNpc.Add(template.FormKey, npcRecord);
-                    }
-                }
-            }
-
-            var result = new Dictionary<FormKey, FormKey>();
-            foreach (var kv in nonNull) {
-                if (leveledNpcToNpc.ContainsKey(kv.Key)) {
-                    var root = leveledNpcToNpc[kv.Key].FormKey;
-                    var source = kv.Value;
-                    if (leveledNpcToNpc.ContainsKey(source)) {
-                        source = leveledNpcToNpc[source].FormKey;
-                    }
-                    result[source] = root;
-                }
-            }*/
 
             leveledNpcTree = result;
         }
@@ -455,9 +404,16 @@ namespace NavmeshSpawner {
 
                             var closestBaseNpc = closestNpc.PlacedNpc.Base;
                             var closestNpcInfo = npcInfoDict[closestBaseNpc.FormKey];
-                            if (!closestNpcInfo.IsValid || closestNpc.PlacedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead)) {
+                            if (!closestNpcInfo.IsValid || closestNpc.PlacedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.StartsDead) || closestNpc.PlacedNpc.MajorFlags.HasFlag(PlacedNpc.MajorFlag.InitiallyDisabled) || closestNpc.PlacedNpc.LevelModifier == Level.VeryHard) {
                                 continue;
                             }
+                            if(closestNpc.PlacedNpc.EnableParent != null || closestNpc.PlacedNpc.ActivateParents != null) {
+                                continue;
+                            }
+                            if (closestNpc.PlacedNpc.EditorID != null) {
+                                continue;
+                            }
+
                             closestNpcs.Enqueue(closestNpc, closestDistance);
 
 
@@ -565,6 +521,7 @@ namespace NavmeshSpawner {
                             newNpc.LinkedReferences.Clear();
                             newNpc.LocationRefTypes = null;
                             newNpc.PersistentLocation.Clear();
+                            newNpc.VirtualMachineAdapter = null;
                             var direction = (float)rng.NextDouble() * 360;
                             if (placedMarkers.Count > 0) {
                                 var minDistance = double.MaxValue;
